@@ -1,0 +1,2 @@
+libreoffice-calc-nogui
+fonts-noto-core
