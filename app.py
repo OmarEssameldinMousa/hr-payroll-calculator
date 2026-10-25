@@ -27,7 +27,7 @@ st.caption("1 Payroll group → 2 Upload attendance → 3 Employee schedule → 
 st.header(f"1 · Payroll group: {GROUP['name']}")
 p = PAYROLL
 st.markdown(f"**Payroll {p['code']} — {p['name']}** (fixed rules)")
-st.table(pd.DataFrame([
+st.dataframe(pd.DataFrame([  # not st.table: it renders markdown, so "> 30 min" became a blockquote
     ("Late arrival", "≤ 10 min", "nothing"),
     ("Late arrival", "> 10 min and ≤ 30 min", "-1/4 day"),
     ("Late arrival", "> 30 min", "-1/3 day"),
@@ -39,7 +39,7 @@ st.table(pd.DataFrame([
     ("Overtime exception", "a day off or absence before the next attended day cancels it", "—"),
     ("Absence without permission", "غياب", "-2 days"),
     ("Official day off", "weekly vacation — no deductions, no overtime", "nothing"),
-], columns=["Rule", "Condition", "Deduction"]))
+], columns=["Rule", "Condition", "Deduction"]), hide_index=True, width="stretch")
 
 # =========================================================== 2. upload
 st.header("2 · Upload attendance export (.xls)")
