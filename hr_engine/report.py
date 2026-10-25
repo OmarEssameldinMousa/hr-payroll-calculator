@@ -18,6 +18,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 
 from .engine import Employee, PeriodResult
 
@@ -67,6 +68,52 @@ def _clear_below(ws, first_row: int):
             ws.unmerge_cells(str(rng))
     if ws.max_row >= first_row:
         ws.delete_rows(first_row, ws.max_row - first_row + 1)
+
+
+def _fit_to_page(ws, ncol: int, last_row: int) -> None:
+    """Shrink columns to their content and stretch rows so one A4 landscape page is filled.
+
+    Widths are in Excel character units (~7px each); heights in points. Approximate is
+    fine: fit-to-page still guarantees everything lands on one page.
+    """
+    # row-1 group headers merged across 2 columns don't size a single column
+    wide = {(m.min_row, m.min_col) for m in ws.merged_cells.ranges if m.max_col > m.min_col}
+    widths = []
+    for c in range(1, ncol + 1):
+        longest = 0
+        for r in range(1, last_row + 1):
+            cell = ws.cell(r, c)
+            if cell.value is None or (r, c) in wide:
+                continue
+            text = cell.value.strftime("%d-%b") if isinstance(cell.value, datetime) else str(cell.value)
+            big = (cell.font.sz or 11) > 11 or cell.font.b   # 12pt / bold text is wider
+            longest = max(longest, len(text) * (1.15 if big else 1))
+        widths.append(max(6, round(longest + 2, 1)))
+        ws.column_dimensions[get_column_letter(c)].width = widths[-1]
+
+    margin = 0.3   # inches
+    ws.page_margins.left = ws.page_margins.right = margin
+    ws.page_margins.top, ws.page_margins.bottom = 0.5, margin   # room for the name header
+    ws.page_margins.header = 0.2
+    page_w, page_h = 842 - 2 * margin * 72, 595 - (0.5 + margin) * 72   # A4 landscape, points
+    table_w = sum(w * 7 + 5 for w in widths) * 0.75                     # chars → px → points
+    # rows tall enough that, at the scale set by the width, the table also fills the height
+    data_rows = last_row - 2
+    row_h = 1.15 * (table_w * page_h / page_w - 2 * 18) / max(data_rows, 1)   # 1.15: px estimate runs short
+    for r in range(3, last_row + 1):
+        ws.row_dimensions[r].height = min(max(row_h, 15), 40)
+        for c in range(1, ncol + 1):   # taller rows → keep every value vertically centred
+            al = copy(ws.cell(r, c).alignment)
+            al.vertical = "center"
+            ws.cell(r, c).alignment = al
+
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_setup.fitToWidth = ws.page_setup.fitToHeight = 1
+    ws.print_options.horizontalCentered = True
+    ws.print_area = f"A1:{get_column_letter(ncol)}{last_row}"
+    ws.print_title_rows = "1:2"
 
 
 def build_report(res: PeriodResult, emp: Employee, include_summary: bool = False) -> bytes:
@@ -124,13 +171,9 @@ def build_report(res: PeriodResult, emp: Employee, include_summary: bool = False
         cell = ws.cell(row, c, totals.get(c))
         cell._style = copy(total_style[c - 1])
 
-    # print setup (used by Excel printing and the PDF): landscape, one page wide,
-    # header rows repeated, employee + period in the page header
-    ws.page_setup.orientation = "landscape"
-    ws.page_setup.paperSize = ws.PAPERSIZE_A4
-    ws.sheet_properties.pageSetUpPr.fitToPage = True
-    ws.page_setup.fitToWidth, ws.page_setup.fitToHeight = 1, 0
-    ws.print_title_rows = "1:2"
+    # print setup (used by Excel printing and the PDF): one full A4 landscape page,
+    # employee + period in the page header
+    _fit_to_page(ws, ncol, row)
     period = f"{res.days[0].day.date} → {res.days[-1].day.date}" if res.days else ""
     ws.oddHeader.center.text = f"{emp.name} ({emp.code})   {period}".replace("&", "&&")  # & is a header code
 
