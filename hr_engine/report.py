@@ -76,20 +76,46 @@ def _fit_to_page(ws, ncol: int, last_row: int) -> None:
     Widths are in Excel character units (~7px each); heights in points. Approximate is
     fine: fit-to-page still guarantees everything lands on one page.
     """
-    # row-1 group headers merged across 2 columns don't size a single column
+    # one readable font everywhere: the template's Aptos Narrow isn't on Linux/LibreOffice,
+    # which then substitutes something else
+    for r in range(1, last_row + 1):
+        for c in range(1, ncol + 1):
+            f = copy(ws.cell(r, c).font)
+            f.name = "Arial"
+            ws.cell(r, c).font = f
+
+    def text_w(cell, text: str) -> float:   # width in Excel char units
+        big = (cell.font.sz or 11) > 11 or cell.font.b   # 12pt / bold text is wider
+        return len(text) * (1.15 if big else 1)
+
+    # Size each column by its data. Long headers wrap onto 2 lines instead of widening the
+    # column, and so do rare long values like "09:00am, (additional)" (they break at " (").
+    # Row-1 group headers merged across 2 columns don't size a single column.
     wide = {(m.min_row, m.min_col) for m in ws.merged_cells.ranges if m.max_col > m.min_col}
-    widths = []
+    widths, wrap_rows = [], set()
     for c in range(1, ncol + 1):
-        longest = 0
-        for r in range(1, last_row + 1):
+        need = 0.0
+        for r in (1, 2):
             cell = ws.cell(r, c)
-            if cell.value is None or (r, c) in wide:
+            if cell.value and (r, c) not in wide:
+                words = str(cell.value).split()
+                need = max(need, text_w(cell, max(words, key=len)), text_w(cell, str(cell.value)) / 2)
+        for r in range(3, last_row + 1):
+            cell = ws.cell(r, c)
+            if cell.value is None:
                 continue
             text = cell.value.strftime("%d-%b") if isinstance(cell.value, datetime) else str(cell.value)
-            big = (cell.font.sz or 11) > 11 or cell.font.b   # 12pt / bold text is wider
-            longest = max(longest, len(text) * (1.15 if big else 1))
-        widths.append(max(6, round(longest + 2, 1)))
+            need = max(need, max(text_w(cell, part) for part in text.split(" (")))
+        widths.append(max(6, round(need + 1.5, 1)))
         ws.column_dimensions[get_column_letter(c)].width = widths[-1]
+        for r in range(1, last_row + 1):   # anything still wider than the column wraps
+            cell = ws.cell(r, c)
+            if isinstance(cell.value, str) and text_w(cell, cell.value) > widths[-1] - 1:
+                al = copy(cell.alignment)
+                al.wrap_text = True
+                cell.alignment = al
+                if r >= 3:
+                    wrap_rows.add(r)
 
     margin = 0.3   # inches
     ws.page_margins.left = ws.page_margins.right = margin
@@ -97,11 +123,14 @@ def _fit_to_page(ws, ncol: int, last_row: int) -> None:
     ws.page_margins.header = 0.2
     page_w, page_h = 842 - 2 * margin * 72, 595 - (0.5 + margin) * 72   # A4 landscape, points
     table_w = sum(w * 7 + 5 for w in widths) * 0.75                     # chars → px → points
+    two_lines, header_h = 32, 16 + 32
+    ws.row_dimensions[1].height, ws.row_dimensions[2].height = 16, 32
     # rows tall enough that, at the scale set by the width, the table also fills the height
-    data_rows = last_row - 2
-    row_h = 1.15 * (table_w * page_h / page_w - 2 * 18) / max(data_rows, 1)   # 1.15: px estimate runs short
+    target = 1.15 * table_w * page_h / page_w - header_h   # 1.15: px estimate runs short
+    plain = [r for r in range(3, last_row + 1) if r not in wrap_rows]
+    row_h = (target - two_lines * len(wrap_rows)) / max(len(plain), 1)
     for r in range(3, last_row + 1):
-        ws.row_dimensions[r].height = min(max(row_h, 15), 40)
+        ws.row_dimensions[r].height = max(two_lines, row_h) if r in wrap_rows else min(max(row_h, 16), 40)
         for c in range(1, ncol + 1):   # taller rows → keep every value vertically centred
             al = copy(ws.cell(r, c).alignment)
             al.vertical = "center"
